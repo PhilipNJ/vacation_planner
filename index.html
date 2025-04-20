@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flippin Trippin</title>
+    <link rel="stylesheet" href="https://cdn.simplecss.org/simple.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/bcryptjs/2.4.0/bcrypt.min.js"></script>
+    <style>
+        .page { display: none; padding: 20px; }
+        .active-page { display: block; }
+        .trip-card { border: 1px solid #ddd; padding: 15px; margin: 10px 0; }
+        #loading { position: fixed; top: 0; left: 0; right: 0; background: #ffeb3b; padding: 15px; text-align: center; }
+        .error { color: red; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <div id="loading">Initializing application...</div>
+    
+    <!-- Login/Signup Page -->
+    <div id="login-page" class="page">
+        <h1>🚀 Flippin Trippin</h1>
+        <div id="login-form">
+            <h2>Login</h2>
+            <input type="text" id="login-username" placeholder="Username">
+            <input type="password" id="login-password" placeholder="Password">
+            <button onclick="login()">Login</button>
+            <p class="error" id="login-error"></p>
+            <p><a href="#" onclick="showPage('signup-page')">Create new account</a></p>
+        </div>
+
+        <div id="signup-page" class="page">
+            <h2>Sign Up</h2>
+            <input type="text" id="signup-username" placeholder="Username">
+            <input type="password" id="signup-password" placeholder="Password">
+            <button onclick="createAccount()">Create Account</button>
+            <p class="error" id="signup-error"></p>
+            <p><a href="#" onclick="showPage('login-form')">Back to login</a></p>
+        </div>
+    </div>
+
+    <!-- Dashboard Page -->
+    <div id="dashboard-page" class="page">
+        <h1>Your Trips 🧳</h1>
+        <button onclick="showPage('create-trip-page')">➕ New Trip</button>
+        <div id="trips-list"></div>
+        <button onclick="logout()">Logout</button>
+    </div>
+
+    <!-- Create Trip Page -->
+    <div id="create-trip-page" class="page">
+        <h1>Plan New Trip ✨</h1>
+        <input type="text" id="trip-name" placeholder="Trip Name">
+        <div>
+            <input type="text" id="new-participant" placeholder="Add participant username">
+            <button onclick="addParticipant()">Add</button>
+        </div>
+        <div id="participants-list"></div>
+        <button onclick="createTrip()">Create Trip</button>
+        <p class="error" id="trip-error"></p>
+        <p><a href="#" onclick="showPage('dashboard-page')">Cancel</a></p>
+    </div>
+
+    <script>
+        // ======================
+        // CONFIGURATION
+        // ======================
+        const SPREADSHEET_ID = '1Op586VEmpahnkvQECp8vTSu5pf-PBJIE0zjjCPjOI3Q';
+        const API_KEY = 'AIzaSyDgKwL2mXbDOizg7tN7R4ZGZ6O8YzJMtHc';
+        const CORS_PROXY = 'https://cors-anywhere.herokuapp.com/';
+        let currentUser = null;
+
+        // ======================
+        // INITIALIZATION
+        // ======================
+        async function initializeApp() {
+            try {
+                // Check for required libraries
+                if (typeof bcrypt === 'undefined') {
+                    throw new Error('Security library failed to load');
+                }
+
+                // Test Google Sheets connection
+                const testUrl = `${CORS_PROXY}https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}?key=${API_KEY}`;
+                const testResponse = await fetch(testUrl);
+                
+                if (!testResponse.ok) {
+                    throw new Error('Failed to connect to Google Sheets');
+                }
+
+                // Check initial page hash
+                const initialPage = window.location.hash.substring(1) || 'login-page';
+                showPage(initialPage);
+                
+                document.getElementById('loading').remove();
+            } catch (error) {
+                document.getElementById('loading').innerHTML = `
+                    <h2>Initialization Failed</h2>
+                    <p>${error.message}</p>
+                    <p>Please check:</p>
+                    <ul>
+                        <li>Internet connection</li>
+                        <li>Google Sheets API key</li>
+                        <li>Spreadsheet sharing settings</li>
+                    </ul>
+                `;
+            }
+        }
+
+        // ======================
+        // AUTHENTICATION
+        // ======================
+        async function createAccount() {
+            const username = document.getElementById('signup-username').value;
+            const password = document.getElementById('signup-password').value;
+            const errorElement = document.getElementById('signup-error');
+
+            try {
+                errorElement.textContent = '';
+                
+                // Get existing users
+                const users = await sheetAPI('Users!A2:C');
+                if (users.values?.some(u => u[1] === username)) {
+                    throw new Error('Username already exists');
+                }
+
+                // Hash password
+                const salt = bcrypt.genSaltSync(10);
+                const hash = bcrypt.hashSync(password, salt);
+
+                // Save user
+                await appendToSheet('Users', [Date.now(), username, hash]);
+                showPage('login-form');
+            } catch (error) {
+                errorElement.textContent = error.message;
+            }
+        }
+
+        async function login() {
+            const username = document.getElementById('login-username').value;
+            const password = document.getElementById('login-password').value;
+            const errorElement = document.getElementById('login-error');
+
+            try {
+                errorElement.textContent = '';
+                
+                // Get user from sheet
+                const users = await sheetAPI('Users!A2:C');
+                const user = users.values?.find(u => u[1] === username);
+
+                if (!user || !bcrypt.compareSync(password, user[2])) {
+                    throw new Error('Invalid username or password');
+                }
+
+                currentUser = { id: user[0], username };
+                await loadTrips();
+                showPage('dashboard-page');
+                startRealtimeUpdates();
+            } catch (error) {
+                errorElement.textContent = error.message;
+            }
+        }
+
+        // ======================
+        // TRIP MANAGEMENT
+        // ======================
+        async function createTrip() {
+            const tripName = document.getElementById('trip-name').value;
+            const participants = Array.from(document.querySelectorAll('.participant'))
+                                .map(p => p.dataset.username);
+            const errorElement = document.getElementById('trip-error');
+
+            try {
+                errorElement.textContent = '';
+                
+                // Create trip
+                const tripId = Date.now();
+                await appendToSheet('Trips', [tripId, tripName, currentUser.id, new Date().toISOString()]);
+
+                // Add participants
+                const allUsers = await sheetAPI('Users!A2:B');
+                await Promise.all(participants.map(async username => {
+                    const user = allUsers.values?.find(u => u[1] === username);
+                    if (user) {
+                        await appendToSheet('TripMembers', [tripId, user[0]]);
+                    }
+                }));
+
+                await loadTrips();
+                showPage('dashboard-page');
+            } catch (error) {
+                errorElement.textContent = 'Failed to create trip: ' + error.message;
+            }
+        }
+
+        // ======================
+        // HELPER FUNCTIONS
+        // ======================
+        async function sheetAPI(range) {
+            const url = `${CORS_PROXY}https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${range}?key=${API_KEY}`;
+            const response = await fetch(url);
+            if (!response.ok) throw new Error('API request failed');
+            return response.json();
+        }
+
+        async function appendToSheet(sheetName, data) {
+            const url = `${CORS_PROXY}https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${sheetName}!A1:append?valueInputOption=USER_ENTERED&key=${API_KEY}`;
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ values: [data] })
+            });
+            if (!response.ok) throw new Error('Failed to save data');
+        }
+
+        function showPage(pageId) {
+            document.querySelectorAll('.page').forEach(p => p.style.display = 'none');
+            document.getElementById(pageId).style.display = 'block';
+            window.location.hash = pageId;
+        }
+
+        // ======================
+        // START APPLICATION
+        // ======================
+        initializeApp();
+    </script>
+</body>
+</html>
