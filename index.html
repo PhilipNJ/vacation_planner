@@ -9,15 +9,13 @@
         .page { display: none; padding: 20px; }
         .active-page { display: block; }
         .trip-card { border: 1px solid #ddd; padding: 15px; margin: 10px 0; }
-        #loading { position: fixed; top: 0; left: 0; right: 0; background: #ffeb3b; padding: 15px; text-align: center; }
         .error { color: red; margin: 10px 0; }
+        #data-management { position: fixed; bottom: 10px; right: 10px; }
     </style>
 </head>
 <body>
-    <div id="loading">Loading Flippin Trippin...</div>
-    
     <!-- Login/Signup Page -->
-    <div id="login-page" class="page">
+    <div id="login-page" class="page active-page">
         <h1>🌴 Flippin Trippin</h1>
         <div id="login-form">
             <h2>Login</h2>
@@ -60,161 +58,184 @@
         <p><a href="#" onclick="showPage('dashboard-page')">Cancel</a></p>
     </div>
 
+    <!-- Data Management -->
+    <div id="data-management">
+        <button onclick="exportData()">Export Data</button>
+        <input type="file" id="import-file" onchange="importData()" accept=".csv">
+    </div>
+
     <script>
-        // ======================
-        // CONFIGURATION
-        // ======================
-        const SPREADSHEET_ID = '1Op586VEmpahnkvQECp8vTSu5pf-PBJIE0zjjCPjOI3Q';
-        const API_KEY = 'AIzaSyDgKwL2mXbDOizg7tN7R4ZGZ6O8YzJMtHc';
-        const CORS_PROXY = 'https://cors-anywhere.herokuapp.com/';
         let currentUser = null;
-
-        // ======================
-        // INITIALIZATION
-        // ======================
-        async function initializeApp() {
-            try {
-                // Test Google Sheets connection
-                const testUrl = `${CORS_PROXY}https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}?key=${API_KEY}`;
-                const testResponse = await fetch(testUrl);
-                
-                if (!testResponse.ok) {
-                    throw new Error('Failed to connect to Google Sheets');
-                }
-
-                // Check initial page hash
-                const initialPage = window.location.hash.substring(1) || 'login-page';
-                showPage(initialPage);
-                
-                document.getElementById('loading').remove();
-            } catch (error) {
-                document.getElementById('loading').innerHTML = `
-                    <div style="color: red;">
-                        <h2>Initialization Error</h2>
-                        <p>${error.message}</p>
-                        <p>Please check:</p>
-                        <ul>
-                            <li>Internet connection</li>
-                            <li>Google Sheets API key</li>
-                            <li>Spreadsheet sharing settings</li>
-                        </ul>
-                        <button onclick="location.reload()">Reload App</button>
-                    </div>
-                `;
+        
+        // Initialize CSV storage
+        function initStorage() {
+            if (!localStorage.getItem('users')) {
+                localStorage.setItem('users', 'id,username,password\n');
+            }
+            if (!localStorage.getItem('trips')) {
+                localStorage.setItem('trips', 'id,name,owner_id,created_at\n');
+            }
+            if (!localStorage.getItem('trip_members')) {
+                localStorage.setItem('trip_members', 'trip_id,user_id\n');
             }
         }
 
-        // ======================
-        // AUTHENTICATION (Simplified)
-        // ======================
-        async function createAccount() {
+        // CSV Helper Functions
+        function csvToArray(csv) {
+            const rows = csv.split('\n').filter(row => row.trim() !== '');
+            return rows.slice(1).map(row => {
+                const values = row.split(',');
+                return {
+                    id: values[0],
+                    username: values[1],
+                    password: values[2]
+                };
+            });
+        }
+
+        function appendToCSV(storageKey, data) {
+            const csv = localStorage.getItem(storageKey);
+            localStorage.setItem(storageKey, csv + data.join(',') + '\n');
+        }
+
+        // Authentication
+        function createAccount() {
             const username = document.getElementById('signup-username').value;
             const password = document.getElementById('signup-password').value;
             const errorElement = document.getElementById('signup-error');
-
-            try {
-                errorElement.textContent = '';
-                
-                // Get existing users
-                const users = await sheetAPI('Users!A2:C');
-                if (users.values?.some(u => u[1] === username)) {
-                    throw new Error('Username already exists');
-                }
-
-                // Save user (plain text password)
-                await appendToSheet('Users', [Date.now(), username, password]);
-                showPage('login-form');
-            } catch (error) {
-                errorElement.textContent = error.message;
+            
+            const users = csvToArray(localStorage.getItem('users'));
+            if (users.some(u => u.username === username)) {
+                errorElement.textContent = 'Username already exists';
+                return;
             }
+
+            const newUser = [Date.now(), username, password];
+            appendToCSV('users', newUser);
+            showPage('login-form');
         }
 
-        async function login() {
+        function login() {
             const username = document.getElementById('login-username').value;
             const password = document.getElementById('login-password').value;
             const errorElement = document.getElementById('login-error');
-
-            try {
-                errorElement.textContent = '';
-                
-                // Get user from sheet
-                const users = await sheetAPI('Users!A2:C');
-                const user = users.values?.find(u => u[1] === username);
-
-                if (!user || user[2] !== password) {
-                    throw new Error('Invalid username or password');
-                }
-
-                currentUser = { id: user[0], username };
-                await loadTrips();
-                showPage('dashboard-page');
-            } catch (error) {
-                errorElement.textContent = error.message;
+            
+            const users = csvToArray(localStorage.getItem('users'));
+            const user = users.find(u => u.username === username && u.password === password);
+            
+            if (!user) {
+                errorElement.textContent = 'Invalid username or password';
+                return;
             }
+
+            currentUser = { id: user.id, username };
+            loadTrips();
+            showPage('dashboard-page');
         }
 
-        // ======================
-        // TRIP MANAGEMENT
-        // ======================
-        async function createTrip() {
+        // Trip Management
+        function createTrip() {
             const tripName = document.getElementById('trip-name').value;
             const participants = Array.from(document.querySelectorAll('.participant'))
                                 .map(p => p.dataset.username);
             const errorElement = document.getElementById('trip-error');
 
-            try {
-                errorElement.textContent = '';
-                
-                // Create trip
-                const tripId = Date.now();
-                await appendToSheet('Trips', [tripId, tripName, currentUser.id, new Date().toISOString()]);
+            // Create trip
+            const newTrip = [Date.now(), tripName, currentUser.id, new Date().toISOString()];
+            appendToCSV('trips', newTrip);
+            const tripId = newTrip[0];
 
-                // Add participants
-                const allUsers = await sheetAPI('Users!A2:B');
-                await Promise.all(participants.map(async username => {
-                    const user = allUsers.values?.find(u => u[1] === username);
-                    if (user) {
-                        await appendToSheet('TripMembers', [tripId, user[0]]);
-                    }
-                }));
-
-                await loadTrips();
-                showPage('dashboard-page');
-            } catch (error) {
-                errorElement.textContent = 'Failed to create trip: ' + error.message;
-            }
-        }
-
-        // ======================
-        // HELPER FUNCTIONS
-        // ======================
-        async function sheetAPI(range) {
-            const url = `${CORS_PROXY}https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${range}?key=${API_KEY}`;
-            const response = await fetch(url);
-            if (!response.ok) throw new Error('API request failed');
-            return response.json();
-        }
-
-        async function appendToSheet(sheetName, data) {
-            const url = `${CORS_PROXY}https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${sheetName}!A1:append?valueInputOption=USER_ENTERED&key=${API_KEY}`;
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ values: [data] })
+            // Add participants
+            const users = csvToArray(localStorage.getItem('users'));
+            participants.forEach(username => {
+                const user = users.find(u => u.username === username);
+                if (user) {
+                    appendToCSV('trip_members', [tripId, user.id]);
+                }
             });
-            if (!response.ok) throw new Error('Failed to save data');
+
+            loadTrips();
+            showPage('dashboard-page');
         }
 
+        // Data Import/Export
+        function exportData() {
+            const data = {
+                users: localStorage.getItem('users'),
+                trips: localStorage.getItem('trips'),
+                trip_members: localStorage.getItem('trip_members')
+            };
+
+            const blob = new Blob([JSON.stringify(data)], {type: 'application/json'});
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = 'flippin-trippin-backup.json';
+            link.click();
+        }
+
+        function importData() {
+            const file = document.getElementById('import-file').files[0];
+            const reader = new FileReader();
+            
+            reader.onload = function(e) {
+                try {
+                    const data = JSON.parse(e.target.result);
+                    localStorage.setItem('users', data.users);
+                    localStorage.setItem('trips', data.trips);
+                    localStorage.setItem('trip_members', data.trip_members);
+                    alert('Data imported successfully!');
+                } catch (error) {
+                    alert('Invalid backup file');
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        // UI Functions
         function showPage(pageId) {
             document.querySelectorAll('.page').forEach(p => p.style.display = 'none');
-            document.getElementById(pageId).style.display = 'block';
-            window.location.hash = pageId;
+            document.getElementById(pageId).style.display = 'block');
         }
 
-        // ======================
-        // START APPLICATION
-        // ======================
-        initializeApp();
+        function loadTrips() {
+            const trips = csvToArray(localStorage.getItem('trips'));
+            const userTrips = trips.filter(t => t.owner_id === currentUser.id);
+            
+            let html = '';
+            userTrips.forEach(trip => {
+                html += `
+                    <div class="trip-card">
+                        <h3>${trip.name}</h3>
+                        <p>Created: ${new Date(trip.created_at).toLocaleDateString()}</p>
+                    </div>
+                `;
+            });
+            document.getElementById('trips-list').innerHTML = html;
+        }
+
+        function addParticipant() {
+            const username = document.getElementById('new-participant').value;
+            const list = document.getElementById('participants-list');
+            
+            const div = document.createElement('div');
+            div.className = 'participant';
+            div.dataset.username = username;
+            div.innerHTML = `
+                ${username}
+                <button onclick="this.parentElement.remove()">×</button>
+            `;
+            
+            list.appendChild(div);
+            document.getElementById('new-participant').value = '';
+        }
+
+        function logout() {
+            currentUser = null;
+            showPage('login-page');
+        }
+
+        // Initialize
+        initStorage();
     </script>
 </body>
 </html>
