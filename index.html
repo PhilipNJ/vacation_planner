@@ -119,15 +119,26 @@
             const username = document.getElementById('login-username').value;
             const password = document.getElementById('login-password').value;
             const errorElement = document.getElementById('login-error');
-            
+            errorElement.textContent = '';
+
+            // Get all users
             const users = csvToArray(localStorage.getItem('users'));
-            const user = users.find(u => u.username === username && u.password === password);
-            
-            if (!user) {
-                errorElement.textContent = 'Invalid username or password';
+
+            // Check if username exists
+            const userExists = users.some(u => u.username === username);
+            if (!userExists) {
+                errorElement.textContent = 'User does not exist';
                 return;
             }
 
+            // Check password match
+            const user = users.find(u => u.username === username);
+            if (user.password !== password) {
+                errorElement.textContent = 'Incorrect password';
+                return;
+            }
+
+            // Successful login
             currentUser = { id: user.id, username };
             loadTrips();
             showPage('dashboard-page');
